@@ -1,0 +1,98 @@
+# 1选择基础镜像
+FROM nvidia/cudagl:11.3.0-devel-ubuntu20.04
+
+# 2 开启终端色彩
+ENV TERM=xterm-256color
+
+# 3 删除英伟达软件源
+# RUN rm /etc/apt/sources.list.d/cuda.list && \
+# 	rm /etc/apt/sources.list.d/nvidia-ml.list
+
+# 4 制作完整版 ubuntu
+#RUN export DEBIAN_FRONTEND=noninteractive && \
+#    bash -c 'yes | unminimize'
+
+# 5 apt安装常用软件
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    wget \
+    sudo \
+    openssh-server \
+    vim \
+    zsh \
+    lrzsz \
+    tmux && \
+    rm -rf /var/lib/apt/lists/*
+
+# 6 apt安装常用库
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     libsm6 \
+#     libxext6 \
+#     libxrender-dev \
+#     libglu1 && \
+#     rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/miniconda3/bin:${PATH}"
+ARG PATH="/opt/miniconda3/bin:${PATH}"
+
+# 安装miniconda并给root下的bash进行初始化，便于使用root权限执行conda命令安装库
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh \
+    && bash Miniconda3-latest-Linux-x86_64.sh -b -p /opt/miniconda3 \
+    && rm -f Miniconda3-latest-Linux-x86_64.sh \
+    && /opt/miniconda3/bin/conda init bash
+
+# 7 将pip, apt等获取来源调整为清华镜像
+# RUN wget https://tuna.moe/oh-my-tuna/oh-my-tuna.py && python oh-my-tuna.py && apt-get update
+
+# 8 新建用户并用 fixuid 管理 uid
+ENV USERNAME="docker"
+ENV PASSWD="Docker@Epic2022"
+RUN useradd --create-home --no-log-init --shell /bin/zsh ${USERNAME} && \
+    echo "${USERNAME}:${PASSWD}" | chpasswd && \
+    USER=${USERNAME} && \
+    GROUP=${USERNAME} && \
+    curl -SsL https://github.com/boxboat/fixuid/releases/download/v0.4.1/fixuid-0.4.1-linux-amd64.tar.gz | tar -C /usr/local/bin -xzf - && \
+    chown root:root /usr/local/bin/fixuid && \
+    chmod 4755 /usr/local/bin/fixuid && \
+    mkdir -p /etc/fixuid && \
+    printf "user: $USER\ngroup: $GROUP\n" > /etc/fixuid/config.yml && \
+    echo "${USERNAME}   ALL=(ALL:ALL) ALL" >> /etc/sudoers
+WORKDIR /home/${USERNAME}
+USER ${USERNAME}:${USERNAME}
+
+# 9 安装配置oh-my-zsh
+RUN sh -c "$(curl -fsSL https://gitee.com/Devkings/oh_my_zsh_install/raw/master/install.sh)" && \
+    git clone https://gitee.com/JinfengX/zsh-autosuggestions.git .oh-my-zsh/custom/plugins/zsh-autosuggestions && \
+    git clone https://gitee.com/JinfengX/zsh-syntax-highlighting.git .oh-my-zsh/custom/plugins/zsh-syntax-highlighting && \
+    sed -i "s/^plugins=.*$/plugins=(git z zsh-autosuggestions zsh-syntax-highlighting)/" .zshrc && \
+    sed -i 's/^ZSH_THEME=.*$/ZSH_THEME="ys"/' .zshrc
+
+# 10 配置环境变量，使ssh连接时env也生效
+RUN sed -i '$a\export $(cat /proc/1/environ |tr "\\0" "\\n" |tr " " ";" | xargs)' .zshrc
+
+
+# 11 配置tmux
+RUN git clone https://gitee.com/JinfengX/oh-my-tmux.git .tmux && \
+    ln -s -f .tmux/.tmux.conf && \
+    cp .tmux/.tmux.conf.local .
+
+# 12 开放ssh端口
+EXPOSE 22
+
+
+# 13 使用conda初始化zsh,复制root环境下的python环境base到user_base,添加user_base环境中的可执行文件路径到PATH,指定默认使用user_base环境,开启ssh
+RUN /opt/miniconda3/bin/conda init zsh && \
+    echo 'PATH=~/.local/bin:$PATH' >> ~/.zshrc
+# 以下两行选择性使用, 但不建议使用, 可以通过root执行conda install来等效解决这两行要解决的问题
+#conda create -y -n user_base --clone base && 
+#echo 'conda activate user_base' >> ~/.zshrc
+
+ENV LANG C.UTF-8 
+
+WORKDIR /workspace
+
+ENTRYPOINT ["fixuid"]
+CMD echo ${PASSWD} | sudo -S service ssh start && \
+    echo "\033[31mName: $USERNAME \r\nPasswd: $PASSWD\033[0m\r\n" && \
+    /bin/zsh
